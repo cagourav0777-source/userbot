@@ -93,7 +93,7 @@ async def manual_unafk(client, message):
     await message.edit_text("⚡ **ɪ'ᴍ ʙᴀᴄᴋ ᴏɴʟɪɴᴇ ɴᴏᴡ!** 👋")
 
 
-# Sirf PRIVATE CHAT (DM) me message bhejte hi AFK off hoga (GC me chat karne par off nahi hoga)
+# Sirf DM me message bhejne par AFK off hoga (GC me chat karne par off nahi hoga)
 @app.on_message(filters.me & filters.private)
 async def auto_unafk_on_message(client, message):
     global IS_AFK, AFK_USERS
@@ -115,7 +115,7 @@ async def auto_unafk_on_message(client, message):
         pass
 
 
-# Auto-reply SIRF DMs me kaam karega
+# Auto-reply SIRF DMs me aayega
 @app.on_message(filters.private & ~filters.me & ~filters.bot & ~filters.service)
 async def afk_reply_handler(client, message):
     global IS_AFK, AFK_REASON, AFK_START_TIME, AFK_USERS
@@ -240,9 +240,10 @@ async def purge_messages(client, message):
 @app.on_message(filters.me & filters.command(["purgeme", "pme"], prefixes=["."]))
 async def purge_me_messages(client, message):
     count = 1
-    if len(message.command) > 1:
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) > 1:
         try:
-            count = int(message.command)
+            count = int(parts.pop())
         except ValueError:
             await message.edit_text("❌ **Usage:** `.purgeme 10`")
             return
@@ -254,13 +255,14 @@ async def purge_me_messages(client, message):
     chat_id = message.chat.id
     msg_ids = []
 
-    # Chat history se sirf apne (outgoing) messages filter karna
+    # Chat history se sirf apne (outgoing) messages collect karna
     async for msg in client.get_chat_history(chat_id, limit=max(count * 8, 50)):
         if msg.outgoing:
             msg_ids.append(msg.id)
-            if len(msg_ids) >= count + 1:  # +1 kyunki .purgeme message bhi delete hoga
+            if len(msg_ids) >= count + 1:
                 break
 
+    # 100-100 ke batch me delete karna
     for i in range(0, len(msg_ids), 100):
         batch = msg_ids[i:i+100]
         try:
