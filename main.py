@@ -13,9 +13,12 @@ from pyrogram import Client, filters, idle
 IST = timezone(timedelta(hours=5, minutes=30))
 
 # --- CREDENTIALS (RENDER ENVIRONMENT VARIABLES) ---
-API_ID = int(os.getenv("API_ID", 30749174))
-API_HASH = os.getenv("API_HASH", "6f40b570865526dc4e87f610e870e467")
+API_ID = int(os.getenv("API_ID", "0"))
+API_HASH = os.getenv("API_HASH", "")
 SESSION_STRING = os.getenv("SESSION_STRING")
+
+if not API_ID or not API_HASH:
+    raise ValueError("❌ ERROR: 'API_ID' / 'API_HASH' environment variables missing hain!")
 
 if not SESSION_STRING:
     raise ValueError("❌ ERROR: Render ke Environment Variables me 'SESSION_STRING' missing hai!")
@@ -39,8 +42,11 @@ IS_CLONED = False
 ORIGINAL_PROFILE = {
     "first_name": "",
     "last_name": "",
-    "bio": ""
+    "bio": "",
+    "photo": None,
 }
+
+PREFIX = ["."]
 
 
 # ================= HELPER: READABLE TIME =================
@@ -50,7 +56,7 @@ def get_readable_time(seconds: int) -> str:
     days, seconds = divmod(seconds, 86400)
     hours, seconds = divmod(seconds, 3600)
     minutes, seconds = divmod(seconds, 60)
-    
+
     parts = []
     if days > 0:
         parts.append(f"{days}d")
@@ -60,43 +66,243 @@ def get_readable_time(seconds: int) -> str:
         parts.append(f"{minutes}m")
     if seconds > 0 and days == 0:
         parts.append(f"{seconds}s")
-    
+
     return " ".join(parts)
 
 
-# ================= 1. AFK SYSTEM (STRICTLY PRIVATE / DMS ONLY) =================
-@app.on_message(filters.me & filters.command("afk", prefixes=["."]))
+async def safe_edit(message, text):
+    """edit_text fail ho jaye to crash na ho."""
+    try:
+        return await message.edit_text(text)
+    except Exception:
+        return message
+
+
+# =========================================================
+#  GROUP 0  ->  SAARE COMMANDS (sabse pehle inhe check karo)
+# =========================================================
+
+# ================= 1. AFK ON / OFF =================
+@app.on_message(filters.me & filters.command("afk", prefixes=PREFIX), group=0)
 async def set_afk(client, message):
-    global IS_AFK, AFK_REASON, AFK_START_TIME, AFK_USERS
+    global IS_AFK, AFK_REASON, AFK_START_TIME
     IS_AFK = True
     AFK_USERS.clear()
     AFK_START_TIME = time.time()
     current_ist = datetime.now(IST).strftime("%I:%M %p")
-    
+
     if len(message.command) > 1:
-        _, AFK_REASON = message.text.split(maxsplit=1)
+        AFK_REASON = message.text.split(maxsplit=1)[1]
     else:
         AFK_REASON = "Away from keyboard"
 
-    await message.edit_text(
+    await safe_edit(
+        message,
         "💤 **ᴀғᴋ ᴍᴏᴅᴇ ᴀᴄᴛɪᴠᴀᴛᴇᴅ** 💤\n\n"
         f"📍 **ʀᴇᴀsᴏɴ :** `{AFK_REASON}`\n"
         f"🕒 **sɪɴᴄᴇ :** `{current_ist}`"
     )
 
 
-@app.on_message(filters.me & filters.command(["unafk", "back"], prefixes=["."]))
+@app.on_message(filters.me & filters.command(["unafk", "back"], prefixes=PREFIX), group=0)
 async def manual_unafk(client, message):
-    global IS_AFK, AFK_REASON, AFK_USERS
+    global IS_AFK
     IS_AFK = False
     AFK_USERS.clear()
-    await message.edit_text("⚡ **ɪ'ᴍ ʙᴀᴄᴋ ᴏɴʟɪɴᴇ ɴᴏᴡ!** 👋")
+    await safe_edit(message, "⚡ **ɪ'ᴍ ʙᴀᴄᴋ ᴏɴʟɪɴᴇ ɴᴏᴡ!** 👋")
 
 
-# Sirf DM me message bhejne par AFK off hoga (GC me chat karne par off nahi hoga)
-@app.on_message(filters.me & filters.private)
+# ================= 2. CLONE & REVERT =================
+@app.on_message(filters.me & filters.command(["copy", "clone"], prefixes=PREFIX), group=0)
+async def copy_profile(client, message):
+    global IS_CLONED
+
+    if not message.reply_to_message or not message.reply_to_message.from_user:
+        await safe_edit(message, "❌ Kisi user ke message par reply karke `.clone` likho.")
+        return
+
+    status_msg = await safe_edit(message, "🔄 **Cloning profile...**")
+
+    try:
+        # Pehli baar clone kar rahe ho to apna original profile backup karo
+        if not IS_CLONED:
+            me = await client.get_chat("me")
+            ORIGINAL_PROFILE["first_name"] = me.first_name or ""
+            ORIGINAL_PROFILE["last_name"] = me.last_name or ""
+            ORIGINAL_PROFILE["bio"] = me.bio or ""
+            ORIGINAL_PROFILE["photo"] = None
+
+            try:
+                my_photos = [p async for p in client.get_chat_photos("me", limit=1)]
+                if my_photos:
+                    ORIGINAL_PROFILE["photo"] = await client.download_media(
+                        my_photos[0].file_id,
+                        file_name="original_dp.jpg"
+                    )
+            except Exception:
+                pass
+
+            IS_CLONED = True
+
+        target_user = message.reply_to_message.from_user
+        target_chat = await client.get_chat(target_user.id)
+
+        await client.update_profile(
+            first_name=target_chat.first_name or "User",
+            last_name=target_chat.last_name or "",
+            bio=target_chat.bio or ""
+        )
+
+        try:
+            photos = [p async for p in client.get_chat_photos(target_chat.id, limit=1)]
+            if photos:
+                photo_path = await client.download_media(photos[0].file_id)
+                await client.set_profile_photo(photo=photo_path)
+                if photo_path and os.path.exists(photo_path):
+                    os.remove(photo_path)
+        except Exception:
+            pass
+
+        await safe_edit(status_msg, "✅ **Profile Cloned Successfully!**")
+    except Exception as e:
+        await safe_edit(status_msg, f"❌ **Error:** `{type(e).__name__}: {e}`")
+
+
+@app.on_message(filters.me & filters.command(["revert", "restore"], prefixes=PREFIX), group=0)
+async def revert_profile(client, message):
+    global IS_CLONED
+
+    if not IS_CLONED:
+        await safe_edit(message, "❌ Koi clone backup nahi mila.")
+        return
+
+    status_msg = await safe_edit(message, "🔄 **Reverting profile...**")
+
+    try:
+        await client.update_profile(
+            first_name=ORIGINAL_PROFILE["first_name"] or "User",
+            last_name=ORIGINAL_PROFILE["last_name"],
+            bio=ORIGINAL_PROFILE["bio"]
+        )
+
+        # Cloned DP hatao
+        try:
+            current = [p async for p in client.get_chat_photos("me", limit=1)]
+            if current:
+                await client.delete_profile_photos(current[0].file_id)
+        except Exception:
+            pass
+
+        # Purani DP wapas lagao
+        old_dp = ORIGINAL_PROFILE.get("photo")
+        if old_dp and os.path.exists(old_dp):
+            try:
+                await client.set_profile_photo(photo=old_dp)
+            except Exception:
+                pass
+
+        IS_CLONED = False
+        await safe_edit(status_msg, "✅ **Profile Restored!**")
+    except Exception as e:
+        await safe_edit(status_msg, f"❌ **Error:** `{type(e).__name__}: {e}`")
+
+
+# ================= 3. PURGE (REPLY SE ABHI TAK SAB DELETE) =================
+@app.on_message(filters.me & filters.command("purge", prefixes=PREFIX), group=0)
+async def purge_messages(client, message):
+    if not message.reply_to_message:
+        await safe_edit(message, "❌ Jahan se purge start karna hai us message par reply karo.")
+        return
+
+    chat_id = message.chat.id
+    start_id = min(message.reply_to_message.id, message.id)
+    end_id = max(message.reply_to_message.id, message.id)
+
+    msg_ids = list(range(start_id, end_id + 1))
+    deleted_count = 0
+
+    for i in range(0, len(msg_ids), 100):
+        batch = msg_ids[i:i + 100]
+        try:
+            deleted_count += await client.delete_messages(chat_id, batch)
+        except Exception:
+            pass
+        await asyncio.sleep(0.2)
+
+    try:
+        status = await client.send_message(chat_id, f"🗑 **Purged {deleted_count} messages!**")
+        await asyncio.sleep(3)
+        await status.delete()
+    except Exception:
+        pass
+
+
+# ================= 4. PURGEME (APNE RECENT MESSAGES DELETE) =================
+@app.on_message(filters.me & filters.command(["purgeme", "pme"], prefixes=PREFIX), group=0)
+async def purge_me_messages(client, message):
+    count = 1
+    if len(message.command) > 1:
+        try:
+            count = int(message.command[1])
+        except ValueError:
+            await safe_edit(message, "❌ **Usage:** `.purgeme 10`")
+            return
+
+    if count <= 0:
+        await safe_edit(message, "❌ Count kam se kam 1 hona chahiye.")
+        return
+
+    chat_id = message.chat.id
+    cmd_id = message.id
+    msg_ids = []
+
+    try:
+        async for msg in client.get_chat_history(chat_id, limit=max(count * 10, 100)):
+            if msg.id == cmd_id:
+                continue
+            if msg.outgoing or (msg.from_user and msg.from_user.is_self):
+                msg_ids.append(msg.id)
+                if len(msg_ids) >= count:
+                    break
+    except Exception as e:
+        await safe_edit(message, f"❌ **Error:** `{type(e).__name__}: {e}`")
+        return
+
+    msg_ids.append(cmd_id)  # command wala message bhi delete
+    deleted = 0
+
+    for i in range(0, len(msg_ids), 100):
+        batch = msg_ids[i:i + 100]
+        try:
+            deleted += await client.delete_messages(chat_id, batch)
+        except Exception:
+            pass
+        await asyncio.sleep(0.2)
+
+    try:
+        status = await client.send_message(chat_id, f"🗑 **Deleted {max(0, deleted - 1)} of your messages!**")
+        await asyncio.sleep(3)
+        await status.delete()
+    except Exception:
+        pass
+
+
+# ================= 5. PING (test ke liye) =================
+@app.on_message(filters.me & filters.command("ping", prefixes=PREFIX), group=0)
+async def ping_cmd(client, message):
+    start = time.time()
+    m = await safe_edit(message, "🏓 **Pinging...**")
+    ms = (time.time() - start) * 1000
+    await safe_edit(m, f"🏓 **Pong!** `{ms:.0f} ms`")
+
+
+# =========================================================
+#  GROUP 1  ->  DM me khud message bhejo to AFK off
+#  (alag group me hai isliye upar ke commands block nahi hote)
+# =========================================================
+@app.on_message(filters.me & filters.private, group=1)
 async def auto_unafk_on_message(client, message):
-    global IS_AFK, AFK_USERS
+    global IS_AFK
     if not IS_AFK:
         return
 
@@ -115,18 +321,23 @@ async def auto_unafk_on_message(client, message):
         pass
 
 
-# Auto-reply SIRF DMs me aayega
-@app.on_message(filters.private & ~filters.me & ~filters.bot & ~filters.service)
+# =========================================================
+#  GROUP 2  ->  AFK auto-reply SIRF DMs me (groups me nahi)
+# =========================================================
+@app.on_message(
+    filters.private & filters.incoming & ~filters.me & ~filters.bot & ~filters.service,
+    group=2
+)
 async def afk_reply_handler(client, message):
-    global IS_AFK, AFK_REASON, AFK_START_TIME, AFK_USERS
     if not IS_AFK:
+        return
+    if not message.from_user:
         return
 
     user_id = message.from_user.id
     current_time = time.time()
     last_reply_time = AFK_USERS.get(user_id, 0)
 
-    # 15 seconds cooldown check
     if (current_time - last_reply_time) < AFK_COOLDOWN:
         return
 
@@ -140,153 +351,30 @@ async def afk_reply_handler(client, message):
         f"⏱️ **ᴀᴡᴀʏ ғᴏʀ :** `{away_for_str}`\n"
         f"📝 **ʀᴇᴀsᴏɴ :** `{AFK_REASON}`"
     )
-    await message.reply_text(reply_text)
-
-
-# ================= 2. CLONE & REVERT =================
-@app.on_message(filters.me & filters.command(["copy", "clone"], prefixes=["."]))
-async def copy_profile(client, message):
-    global IS_CLONED
-    if not message.reply_to_message or not message.reply_to_message.from_user:
-        await message.edit_text("❌ Reply to a valid user's message.")
-        return
-
-    status_msg = await message.edit_text("🔄 Cloning profile...")
-
     try:
-        if not IS_CLONED:
-            my_account = await client.get_chat("me")
-            ORIGINAL_PROFILE["first_name"] = my_account.first_name or ""
-            ORIGINAL_PROFILE["last_name"] = my_account.last_name or ""
-            ORIGINAL_PROFILE["bio"] = my_account.bio or ""
-            IS_CLONED = True
-
-        target_user = message.reply_to_message.from_user
-        target_chat = await client.get_chat(target_user.id)
-
-        await client.update_profile(
-            first_name=target_chat.first_name or "",
-            last_name=target_chat.last_name or "",
-            bio=target_chat.bio or ""
-        )
-
-        photos = [p async for p in client.get_chat_photos(target_chat.id, limit=1)]
-        if photos:
-            photo_path = await client.download_media(photos[0].file_id)
-            await client.set_profile_photo(photo=photo_path)
-            if os.path.exists(photo_path):
-                os.remove(photo_path)
-
-        await status_msg.edit_text("✅ **Profile Cloned Successfully!**")
-    except Exception as e:
-        await status_msg.edit_text(f"❌ **Error:** `{str(e)}`")
-
-
-@app.on_message(filters.me & filters.command(["revert", "restore"], prefixes=["."]))
-async def revert_profile(client, message):
-    global IS_CLONED
-    if not IS_CLONED:
-        await message.edit_text("❌ No clone backup found.")
-        return
-
-    status_msg = await message.edit_text("🔄 Reverting profile...")
-
-    try:
-        await client.update_profile(
-            first_name=ORIGINAL_PROFILE["first_name"],
-            last_name=ORIGINAL_PROFILE["last_name"],
-            bio=ORIGINAL_PROFILE["bio"]
-        )
-
-        my_photos = [p async for p in client.get_chat_photos("me", limit=1)]
-        if my_photos:
-            await client.delete_profile_photos(photo_ids=my_photos[0].file_id)
-
-        IS_CLONED = False
-        await status_msg.edit_text("✅ **Profile Restored!**")
-    except Exception as e:
-        await status_msg.edit_text(f"❌ **Error:** `{str(e)}`")
-
-
-# ================= 3. PURGE (FAST DELETE BY REPLY) =================
-@app.on_message(filters.me & filters.command("purge", prefixes=["."]))
-async def purge_messages(client, message):
-    if not message.reply_to_message:
-        await message.edit_text("❌ Reply to the message to start purge.")
-        return
-
-    start_id = min(message.reply_to_message.id, message.id)
-    end_id = max(message.reply_to_message.id, message.id)
-    chat_id = message.chat.id
-
-    msg_ids = list(range(start_id, end_id + 1))
-    deleted_count = 0
-
-    for i in range(0, len(msg_ids), 100):
-        batch = msg_ids[i:i+100]
-        try:
-            await client.delete_messages(chat_id, batch)
-            deleted_count += len(batch)
-        except Exception:
-            pass
-        await asyncio.sleep(0.1)
-
-    status = await client.send_message(chat_id, f"🗑 **Purged {deleted_count} messages!**")
-    await asyncio.sleep(3)
-    await status.delete()
-
-
-# ================= 4. PURGEME (DELETE OWN RECENT MESSAGES) =================
-@app.on_message(filters.me & filters.command(["purgeme", "pme"], prefixes=["."]))
-async def purge_me_messages(client, message):
-    count = 1
-    parts = (message.text or "").split(maxsplit=1)
-    if len(parts) > 1:
-        try:
-            count = int(parts.pop())
-        except ValueError:
-            await message.edit_text("❌ **Usage:** `.purgeme 10`")
-            return
-
-    if count <= 0:
-        await message.edit_text("❌ Count kam se kam 1 hona chahiye.")
-        return
-
-    chat_id = message.chat.id
-    msg_ids = []
-
-    # Chat history se sirf apne (outgoing) messages collect karna
-    async for msg in client.get_chat_history(chat_id, limit=max(count * 8, 50)):
-        if msg.outgoing:
-            msg_ids.append(msg.id)
-            if len(msg_ids) >= count + 1:
-                break
-
-    # 100-100 ke batch me delete karna
-    for i in range(0, len(msg_ids), 100):
-        batch = msg_ids[i:i+100]
-        try:
-            await client.delete_messages(chat_id, batch)
-        except Exception:
-            pass
-        await asyncio.sleep(0.1)
-
-    deleted_own = max(0, len(msg_ids) - 1)
-    status = await client.send_message(chat_id, f"🗑 **Deleted {deleted_own} of your messages!**")
-    await asyncio.sleep(3)
-    await status.delete()
+        await message.reply_text(reply_text)
+    except Exception:
+        pass
 
 
 # ================= DUMMY WEB SERVER (RENDER 24/7) =================
 async def start_web_server():
-    port = int(os.getenv("PORT", 8080))
+    port = int(os.getenv("PORT", "8080"))
+
     async def handle_request(reader, writer):
-        await reader.read(100)
-        response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 10\r\n\r\nBot Online"
-        writer.write(response)
-        await writer.drain()
-        writer.close()
-        await writer.wait_closed()
+        try:
+            await reader.read(1024)
+            response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 10\r\n\r\nBot Online"
+            writer.write(response)
+            await writer.drain()
+        except Exception:
+            pass
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
 
     server = await asyncio.start_server(handle_request, "0.0.0.0", port)
     print(f"Web server active on port {port}")
@@ -298,9 +386,11 @@ async def start_web_server():
 async def main():
     asyncio.create_task(start_web_server())
     await app.start()
-    print("Userbot started successfully on Render!")
+    me = await app.get_me()
+    print(f"✅ Userbot started as {me.first_name} (@{me.username})")
     await idle()
     await app.stop()
+
 
 if __name__ == "__main__":
     loop.run_until_complete(main())
