@@ -1,7 +1,7 @@
 import asyncio
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 # Python 3.12 / 3.14 loop setup
 loop = asyncio.new_event_loop()
@@ -9,27 +9,21 @@ asyncio.set_event_loop(loop)
 
 from pyrogram import Client, filters, idle
 
-# Environment variables se credentials lena (Cloud deployment ke liye zaroori)
-API_ID = int(os.getenv("API_ID", 30749174))
-API_HASH = os.getenv("API_HASH", "6f40b570865526dc4e87f610e870e467")
-SESSION_STRING = os.getenv("SESSION_STRING")
+# Indian Timezone (IST: UTC + 5:30)
+IST = timezone(timedelta(hours=5, minutes=30))
 
-if not SESSION_STRING:
-    raise ValueError("SESSION_STRING environment variable missing hai!")
+# --- APNI DETAILS YAHAN DAALEIN ---
+API_ID = 30749174               # Apna API ID
+API_HASH = "6f40b570865526dc4e87f610e870e467"  # Apna API Hash
 
-app = Client(
-    "userbot_cloud",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    session_string=SESSION_STRING
-)
+app = Client("my_account_session", api_id=API_ID, api_hash=API_HASH)
 
 # AFK State Management
 IS_AFK = False
 AFK_REASON = ""
-AFK_TIME = ""
-AFK_USERS = {}
-AFK_COOLDOWN = 15
+AFK_START_TIME = 0.0 # Duration calculate karne ke liye
+AFK_USERS = {}       # {user_id: last_reply_time}
+AFK_COOLDOWN = 15    # 15 seconds ka gap har reply ke beech me
 
 # Profile Backup State
 IS_CLONED = False
@@ -40,13 +34,46 @@ ORIGINAL_PROFILE = {
 }
 
 
+# ================= HELPER: READABLE TIME =================
+def get_readable_time(seconds: int) -> str:
+    if seconds < 60:
+        return f"{seconds}s"
+    days, seconds = divmod(seconds, 86400)
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+    
+    parts = []
+    if days > 0:
+        parts.append(f"{days}d")
+    if hours > 0:
+        parts.append(f"{hours}h")
+    if minutes > 0:
+        parts.append(f"{minutes}m")
+    if seconds > 0 and days == 0:
+        parts.append(f"{seconds}s")
+    
+    return " ".join(parts)
+
+
+# Group me agar kisi ne tag kiya ya reply kiya ho
+def is_mentioned_or_replied(_, __, m):
+    if m.mentioned:
+        return True
+    if m.reply_to_message and m.reply_to_message.from_user and m.reply_to_message.from_user.is_self:
+        return True
+    return False
+
+mentioned_or_replied = filters.create(is_mentioned_or_replied)
+
+
 # ================= 1. AFK / AUTO-REPLY SYSTEM =================
 @app.on_message(filters.me & filters.command("afk", prefixes=["."]))
 async def set_afk(client, message):
-    global IS_AFK, AFK_REASON, AFK_TIME, AFK_USERS
+    global IS_AFK, AFK_REASON, AFK_START_TIME, AFK_USERS
     IS_AFK = True
     AFK_USERS.clear()
-    AFK_TIME = datetime.now().strftime("%I:%M %p")
+    AFK_START_TIME = time.time()
+    current_ist = datetime.now(IST).strftime("%I:%M %p")
     
     if len(message.command) > 1:
         _, AFK_REASON = message.text.split(maxsplit=1)
@@ -56,7 +83,7 @@ async def set_afk(client, message):
     await message.edit_text(
         "💤 **ᴀғᴋ ᴍᴏᴅᴇ ᴀᴄᴛɪᴠᴀᴛᴇᴅ** 💤\n\n"
         f"📍 **ʀᴇᴀsᴏɴ :** `{AFK_REASON}`\n"
-        f"🕒 **sɪɴᴄᴇ :** `{AFK_TIME}`"
+        f"🕒 **sɪɴᴄᴇ :** `{current_ist}`"
     )
 
 
@@ -68,36 +95,58 @@ async def manual_unafk(client, message):
     await message.edit_text("⚡ **ɪ'ᴍ ʙᴀᴄᴋ ᴏɴʟɪɴᴇ ɴᴏᴡ!** 👋")
 
 
-@app.on_message(filters.me & ~filters.regex(r"^\."))
+# Kisi bhi chat me message bhejte hi AFK automatic band ho jaye
+@app.on_message(filters.me)
 async def auto_unafk_on_message(client, message):
     global IS_AFK, AFK_USERS
-    if IS_AFK:
-        IS_AFK = False
-        AFK_USERS.clear()
-        status_msg = await message.reply_text("⚡ **ɪ'ᴍ ʙᴀᴄᴋ ᴏɴʟɪɴᴇ ɴᴏᴡ!** 👋")
-        await asyncio.sleep(3)
-        await status_msg.delete()
-
-
-@app.on_message(filters.private & ~filters.me & ~filters.bot & ~filters.service)
-async def afk_reply_handler(client, message):
-    global IS_AFK, AFK_REASON, AFK_TIME, AFK_USERS
     if not IS_AFK:
         return
 
-    user_id = message.from_user.id
+    # Agar koi command '.' ya '/' se chalu ho rahi ho toh unafk na karein
+    text = message.text or message.caption or ""
+    if text.startswith(".") or text.startswith("/"):
+        return
+
+    # Guaranteed AFK disable
+    IS_AFK = False
+    AFK_USERS.clear()
+
+    try:
+        status_msg = await message.reply_text("⚡ **ɪ'ᴍ ʙᴀᴄᴋ ᴏɴʟɪɴᴇ ɴᴏᴡ!** 👋")
+        await asyncio.sleep(3)
+        await status_msg.delete()
+    except Exception:
+        pass
+
+
+# DMs + Groups me agar koi tag ya reply kare toh auto-reply
+@app.on_message(
+    (~filters.me & ~filters.bot & ~filters.service) & 
+    (filters.private | (filters.group & mentioned_or_replied))
+)
+async def afk_reply_handler(client, message):
+    global IS_AFK, AFK_REASON, AFK_START_TIME, AFK_USERS
+    if not IS_AFK:
+        return
+
+    user_id = message.from_user.id if message.from_user else message.chat.id
     current_time = time.time()
     last_reply_time = AFK_USERS.get(user_id, 0)
 
+    # 15 seconds cooldown check per user
     if (current_time - last_reply_time) < AFK_COOLDOWN:
         return
 
     AFK_USERS[user_id] = current_time
 
+    # Kitni der se offline hain calculate karna
+    elapsed_seconds = int(current_time - AFK_START_TIME)
+    away_for_str = get_readable_time(elapsed_seconds)
+
     reply_text = (
         "ɪ ᴀᴍ ᴏғғʟɪɴᴇ ʀɪɢʜᴛ ɴᴏᴡ, ɪ ᴡɪʟʟ ᴄᴏᴍᴇ ᴏɴʟɪɴᴇ ᴀɴᴅ ʀᴇᴘʟʏ. 🕒\n\n"
-        f"📍 **ʀᴇᴀsᴏɴ :** `{AFK_REASON}`\n"
-        f"🕒 **sɪɴᴄᴇ :** `{AFK_TIME}`"
+        f"⏱️ **ᴀᴡᴀʏ ғᴏʀ :** `{away_for_str}`\n"
+        f"📝 **ʀᴇᴀsᴏɴ :** `{AFK_REASON}`"
     )
     await message.reply_text(reply_text)
 
@@ -167,7 +216,7 @@ async def revert_profile(client, message):
         await status_msg.edit_text(f"❌ **Error:** `{str(e)}`")
 
 
-# ================= 3. PURGE =================
+# ================= 3. PURGE (FAST DELETE) =================
 @app.on_message(filters.me & filters.command("purge", prefixes=["."]))
 async def purge_messages(client, message):
     if not message.reply_to_message:
@@ -195,30 +244,10 @@ async def purge_messages(client, message):
     await status.delete()
 
 
-# ================= DUMMY WEB SERVER (RENDER 24/7) =================
-async def start_web_server():
-    port = int(os.getenv("PORT", 8080))
-    async def handle_request(reader, writer):
-        await reader.read(100)
-        response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 10\r\n\r\nBot Online"
-        writer.write(response)
-        await writer.drain()
-        writer.close()
-        await writer.wait_closed()
-
-    server = await asyncio.start_server(handle_request, "0.0.0.0", port)
-    print(f"Web server active on port {port}")
-    async with server:
-        await server.serve_forever()
-
-
-# ================= MAIN STARTUP =================
+# ================= MAIN RUNNER =================
 async def main():
-    # Background me web server start karo (Render ke liye)
-    asyncio.create_task(start_web_server())
-    
     await app.start()
-    print("Cloud Userbot started successfully!")
+    print("Userbot started successfully!")
     await idle()
     await app.stop()
 
