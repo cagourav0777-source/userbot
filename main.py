@@ -12,7 +12,7 @@ from pyrogram import Client, filters, idle
 # Indian Timezone (IST: UTC + 5:30)
 IST = timezone(timedelta(hours=5, minutes=30))
 
-# --- CREDENTIALS (RENDER ENVIRONMENT VARIABLES SE LEGA) ---
+# --- CREDENTIALS (RENDER ENVIRONMENT VARIABLES) ---
 API_ID = int(os.getenv("API_ID", 30749174))
 API_HASH = os.getenv("API_HASH", "6f40b570865526dc4e87f610e870e467")
 SESSION_STRING = os.getenv("SESSION_STRING")
@@ -64,18 +64,7 @@ def get_readable_time(seconds: int) -> str:
     return " ".join(parts)
 
 
-# Group me tag ya reply filter
-def is_mentioned_or_replied(_, __, m):
-    if m.mentioned:
-        return True
-    if m.reply_to_message and m.reply_to_message.from_user and m.reply_to_message.from_user.is_self:
-        return True
-    return False
-
-mentioned_or_replied = filters.create(is_mentioned_or_replied)
-
-
-# ================= 1. AFK / AUTO-REPLY SYSTEM =================
+# ================= 1. AFK SYSTEM (STRICTLY PRIVATE / DMS ONLY) =================
 @app.on_message(filters.me & filters.command("afk", prefixes=["."]))
 async def set_afk(client, message):
     global IS_AFK, AFK_REASON, AFK_START_TIME, AFK_USERS
@@ -104,8 +93,8 @@ async def manual_unafk(client, message):
     await message.edit_text("⚡ **ɪ'ᴍ ʙᴀᴄᴋ ᴏɴʟɪɴᴇ ɴᴏᴡ!** 👋")
 
 
-# Kisi bhi chat me message bhejte hi AFK auto-off
-@app.on_message(filters.me)
+# Sirf PRIVATE CHAT (DM) me message bhejte hi AFK off hoga (GC me chat karne par off nahi hoga)
+@app.on_message(filters.me & filters.private)
 async def auto_unafk_on_message(client, message):
     global IS_AFK, AFK_USERS
     if not IS_AFK:
@@ -126,20 +115,18 @@ async def auto_unafk_on_message(client, message):
         pass
 
 
-# DMs + Groups me tag/reply par auto-reply
-@app.on_message(
-    (~filters.me & ~filters.bot & ~filters.service) & 
-    (filters.private | (filters.group & mentioned_or_replied))
-)
+# Auto-reply SIRF DMs me kaam karega
+@app.on_message(filters.private & ~filters.me & ~filters.bot & ~filters.service)
 async def afk_reply_handler(client, message):
     global IS_AFK, AFK_REASON, AFK_START_TIME, AFK_USERS
     if not IS_AFK:
         return
 
-    user_id = message.from_user.id if message.from_user else message.chat.id
+    user_id = message.from_user.id
     current_time = time.time()
     last_reply_time = AFK_USERS.get(user_id, 0)
 
+    # 15 seconds cooldown check
     if (current_time - last_reply_time) < AFK_COOLDOWN:
         return
 
@@ -221,7 +208,7 @@ async def revert_profile(client, message):
         await status_msg.edit_text(f"❌ **Error:** `{str(e)}`")
 
 
-# ================= 3. PURGE (FAST DELETE) =================
+# ================= 3. PURGE (FAST DELETE BY REPLY) =================
 @app.on_message(filters.me & filters.command("purge", prefixes=["."]))
 async def purge_messages(client, message):
     if not message.reply_to_message:
@@ -245,6 +232,45 @@ async def purge_messages(client, message):
         await asyncio.sleep(0.1)
 
     status = await client.send_message(chat_id, f"🗑 **Purged {deleted_count} messages!**")
+    await asyncio.sleep(3)
+    await status.delete()
+
+
+# ================= 4. PURGEME (DELETE OWN RECENT MESSAGES) =================
+@app.on_message(filters.me & filters.command(["purgeme", "pme"], prefixes=["."]))
+async def purge_me_messages(client, message):
+    count = 1
+    if len(message.command) > 1:
+        try:
+            count = int(message.command)
+        except ValueError:
+            await message.edit_text("❌ **Usage:** `.purgeme 10`")
+            return
+
+    if count <= 0:
+        await message.edit_text("❌ Count kam se kam 1 hona chahiye.")
+        return
+
+    chat_id = message.chat.id
+    msg_ids = []
+
+    # Chat history se sirf apne (outgoing) messages filter karna
+    async for msg in client.get_chat_history(chat_id, limit=max(count * 8, 50)):
+        if msg.outgoing:
+            msg_ids.append(msg.id)
+            if len(msg_ids) >= count + 1:  # +1 kyunki .purgeme message bhi delete hoga
+                break
+
+    for i in range(0, len(msg_ids), 100):
+        batch = msg_ids[i:i+100]
+        try:
+            await client.delete_messages(chat_id, batch)
+        except Exception:
+            pass
+        await asyncio.sleep(0.1)
+
+    deleted_own = max(0, len(msg_ids) - 1)
+    status = await client.send_message(chat_id, f"🗑 **Deleted {deleted_own} of your messages!**")
     await asyncio.sleep(3)
     await status.delete()
 
