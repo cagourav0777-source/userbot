@@ -12,18 +12,27 @@ from pyrogram import Client, filters, idle
 # Indian Timezone (IST: UTC + 5:30)
 IST = timezone(timedelta(hours=5, minutes=30))
 
-# --- APNI DETAILS YAHAN DAALEIN ---
-API_ID = 30749174               # Apna API ID
-API_HASH = "6f40b570865526dc4e87f610e870e467"  # Apna API Hash
+# --- CREDENTIALS (RENDER ENVIRONMENT VARIABLES SE LEGA) ---
+API_ID = int(os.getenv("API_ID", 30749174))
+API_HASH = os.getenv("API_HASH", "6f40b570865526dc4e87f610e870e467")
+SESSION_STRING = os.getenv("SESSION_STRING")
 
-app = Client("my_account_session", api_id=API_ID, api_hash=API_HASH)
+if not SESSION_STRING:
+    raise ValueError("❌ ERROR: Render ke Environment Variables me 'SESSION_STRING' missing hai!")
+
+app = Client(
+    "my_account_session",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    session_string=SESSION_STRING
+)
 
 # AFK State Management
 IS_AFK = False
 AFK_REASON = ""
-AFK_START_TIME = 0.0 # Duration calculate karne ke liye
-AFK_USERS = {}       # {user_id: last_reply_time}
-AFK_COOLDOWN = 15    # 15 seconds ka gap har reply ke beech me
+AFK_START_TIME = 0.0
+AFK_USERS = {}
+AFK_COOLDOWN = 15
 
 # Profile Backup State
 IS_CLONED = False
@@ -55,7 +64,7 @@ def get_readable_time(seconds: int) -> str:
     return " ".join(parts)
 
 
-# Group me agar kisi ne tag kiya ya reply kiya ho
+# Group me tag ya reply filter
 def is_mentioned_or_replied(_, __, m):
     if m.mentioned:
         return True
@@ -95,19 +104,17 @@ async def manual_unafk(client, message):
     await message.edit_text("⚡ **ɪ'ᴍ ʙᴀᴄᴋ ᴏɴʟɪɴᴇ ɴᴏᴡ!** 👋")
 
 
-# Kisi bhi chat me message bhejte hi AFK automatic band ho jaye
+# Kisi bhi chat me message bhejte hi AFK auto-off
 @app.on_message(filters.me)
 async def auto_unafk_on_message(client, message):
     global IS_AFK, AFK_USERS
     if not IS_AFK:
         return
 
-    # Agar koi command '.' ya '/' se chalu ho rahi ho toh unafk na karein
     text = message.text or message.caption or ""
     if text.startswith(".") or text.startswith("/"):
         return
 
-    # Guaranteed AFK disable
     IS_AFK = False
     AFK_USERS.clear()
 
@@ -119,7 +126,7 @@ async def auto_unafk_on_message(client, message):
         pass
 
 
-# DMs + Groups me agar koi tag ya reply kare toh auto-reply
+# DMs + Groups me tag/reply par auto-reply
 @app.on_message(
     (~filters.me & ~filters.bot & ~filters.service) & 
     (filters.private | (filters.group & mentioned_or_replied))
@@ -133,13 +140,11 @@ async def afk_reply_handler(client, message):
     current_time = time.time()
     last_reply_time = AFK_USERS.get(user_id, 0)
 
-    # 15 seconds cooldown check per user
     if (current_time - last_reply_time) < AFK_COOLDOWN:
         return
 
     AFK_USERS[user_id] = current_time
 
-    # Kitni der se offline hain calculate karna
     elapsed_seconds = int(current_time - AFK_START_TIME)
     away_for_str = get_readable_time(elapsed_seconds)
 
@@ -244,10 +249,28 @@ async def purge_messages(client, message):
     await status.delete()
 
 
+# ================= DUMMY WEB SERVER (RENDER 24/7) =================
+async def start_web_server():
+    port = int(os.getenv("PORT", 8080))
+    async def handle_request(reader, writer):
+        await reader.read(100)
+        response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 10\r\n\r\nBot Online"
+        writer.write(response)
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    server = await asyncio.start_server(handle_request, "0.0.0.0", port)
+    print(f"Web server active on port {port}")
+    async with server:
+        await server.serve_forever()
+
+
 # ================= MAIN RUNNER =================
 async def main():
+    asyncio.create_task(start_web_server())
     await app.start()
-    print("Userbot started successfully!")
+    print("Userbot started successfully on Render!")
     await idle()
     await app.stop()
 
