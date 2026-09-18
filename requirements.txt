@@ -1,2 +1,2 @@
-pyrogram
-tgcrypto
+kurigram==2.2.18
+tgcrypto==1.2.5
