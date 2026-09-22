@@ -121,10 +121,11 @@ async def set_afk(client, message):
     AFK_START_TIME = time.time()
     current_ist = datetime.now(IST).strftime("%I:%M %p")
 
-    # Clean text extraction
-    parts = (message.text or "").split(maxsplit=1)
-    if len(parts) > 1:
-        AFK_REASON = parts
+    # String partition (No list indexing)
+    _, _, custom_reason = (message.text or "").partition(" ")
+    clean_reason = custom_reason.strip()
+    if clean_reason:
+        AFK_REASON = clean_reason
     else:
         AFK_REASON = "Away from keyboard"
 
@@ -281,14 +282,13 @@ async def purge_messages(client, message):
 # ================= 4. PURGEME (APNE MESSAGES DELETE) =================
 @app.on_message(filters.me & filters.command(["purgeme", "pme"], prefixes=PREFIX), group=0)
 async def purge_me_messages(client, message):
-    args = (message.text or "").split()
-    count = 1
-    if len(args) > 1:
-        try:
-            count = int(args)
-        except (ValueError, IndexError):
-            await safe_edit(message, "❌ **Usage:** `.purgeme 10`")
-            return
+    # String partition (clean number extraction)
+    _, _, raw_count = (message.text or "").partition(" ")
+    raw_count = raw_count.strip()
+    if raw_count.isdigit():
+        count = int(raw_count)
+    else:
+        count = 1
 
     if count <= 0:
         await safe_edit(message, "❌ Count kam se kam 1 hona chahiye.")
@@ -389,7 +389,7 @@ async def afk_reply_handler(client, message):
     away_for_str = get_readable_time(elapsed_seconds)
 
     reply_text = (
-        "ɪ ᴀᴍ ᴏғғʟɪɴᴇ ʀɪɢʜᴛ ɴᴏᴡ, ɪ ᴡɪʟʟ ᴄᴏᴍᴇ ᴏɴʟɪɴᴇ ᴀɴᴅ ʀᴇᴘʟʏ. 🕒\n\n"
+        "ɪ ᴀᴍ ᴏғғʟɪɴᴇ ʀɪɢʜᴛ ɴᴏᴡ, ɪ ᴡɪʟʟ ᴄᴏᴍᴇ ᴏɴʟɪɴᴇ ᴀɴᴅ ʀᴇᴘʟYP. 🕒\n\n"
         f"⏱️ **ᴀᴡᴀʏ ғᴏʀ :** `{away_for_str}`\n"
         f"📝 **ʀᴇᴀsᴏɴ :** `{AFK_REASON}`"
     )
