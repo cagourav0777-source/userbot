@@ -121,9 +121,10 @@ async def set_afk(client, message):
     AFK_START_TIME = time.time()
     current_ist = datetime.now(IST).strftime("%I:%M %p")
 
-    # Index lagaya taaki string mile, list nahi
-    if len(message.command) > 1:
-        AFK_REASON = message.text.split(maxsplit=1)
+    # Clean text extraction
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) > 1:
+        AFK_REASON = parts
     else:
         AFK_REASON = "Away from keyboard"
 
@@ -247,7 +248,6 @@ async def purge_messages(client, message):
     target_msg_id = message.reply_to_message.id
     cmd_msg_id = message.id
 
-    # Actual existing messages ko fetch karna (koi fake range nahi)
     msg_ids = []
     try:
         async for msg in client.get_chat_history(chat_id):
@@ -269,7 +269,6 @@ async def purge_messages(client, message):
             pass
         await asyncio.sleep(0.2)
 
-    # .purge command wala message hata kar real count
     actual_deleted = max(0, deleted_count - 1)
     try:
         status = await client.send_message(chat_id, f"🗑 **Purged {actual_deleted} messages!**")
@@ -279,13 +278,14 @@ async def purge_messages(client, message):
         pass
 
 
-# ================= 4. PURGEME (FIXED INDEXING) =================
+# ================= 4. PURGEME (APNE MESSAGES DELETE) =================
 @app.on_message(filters.me & filters.command(["purgeme", "pme"], prefixes=PREFIX), group=0)
 async def purge_me_messages(client, message):
+    args = (message.text or "").split()
     count = 1
-    if len(message.command) > 1:
+    if len(args) > 1:
         try:
-            count = int(message.command)  # index fix
+            count = int(args)
         except (ValueError, IndexError):
             await safe_edit(message, "❌ **Usage:** `.purgeme 10`")
             return
