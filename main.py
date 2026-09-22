@@ -76,7 +76,7 @@ def get_readable_time(seconds: int) -> str:
 
 
 async def safe_edit(message, text):
-    """edit_text fail ho jaye to crash na ho."""
+    """edit_text fail hone par crash na ho."""
     try:
         return await message.edit_text(text)
     except Exception:
@@ -84,7 +84,7 @@ async def safe_edit(message, text):
 
 
 async def delete_after_delay(message, delay: int = 120):
-    """Message ko background me specified seconds (120s = 2 min) baad delete karega."""
+    """Background task: 120 seconds (2 mins) baad auto-delete karega."""
     try:
         await asyncio.sleep(delay)
         await message.delete()
@@ -93,7 +93,7 @@ async def delete_after_delay(message, delay: int = 120):
 
 
 def cache_message(msg):
-    """Incoming / Outgoing messages ko RAM me store karna."""
+    """Incoming / Outgoing messages ko RAM cache me store karna."""
     if not msg or not msg.chat:
         return
     key = f"{msg.chat.id}_{msg.id}"
@@ -121,6 +121,7 @@ async def set_afk(client, message):
     AFK_START_TIME = time.time()
     current_ist = datetime.now(IST).strftime("%I:%M %p")
 
+    # Index lagaya taaki string mile, list nahi
     if len(message.command) > 1:
         AFK_REASON = message.text.split(maxsplit=1)
     else:
@@ -235,7 +236,7 @@ async def revert_profile(client, message):
         await safe_edit(status_msg, f"❌ **Error:** `{type(e).__name__}: {e}`")
 
 
-# ================= 3. PURGE =================
+# ================= 3. PURGE (ACTUAL CHAT MESSAGES ONLY) =================
 @app.on_message(filters.me & filters.command("purge", prefixes=PREFIX), group=0)
 async def purge_messages(client, message):
     if not message.reply_to_message:
@@ -243,12 +244,23 @@ async def purge_messages(client, message):
         return
 
     chat_id = message.chat.id
-    start_id = min(message.reply_to_message.id, message.id)
-    end_id = max(message.reply_to_message.id, message.id)
+    target_msg_id = message.reply_to_message.id
+    cmd_msg_id = message.id
 
-    msg_ids = list(range(start_id, end_id + 1))
+    # Actual existing messages ko fetch karna (koi fake range nahi)
+    msg_ids = []
+    try:
+        async for msg in client.get_chat_history(chat_id):
+            if msg.id > cmd_msg_id:
+                continue
+            msg_ids.append(msg.id)
+            if msg.id <= target_msg_id:
+                break
+    except Exception as e:
+        await safe_edit(message, f"❌ **Error:** `{e}`")
+        return
+
     deleted_count = 0
-
     for i in range(0, len(msg_ids), 100):
         batch = msg_ids[i:i + 100]
         try:
@@ -257,21 +269,23 @@ async def purge_messages(client, message):
             pass
         await asyncio.sleep(0.2)
 
+    # .purge command wala message hata kar real count
+    actual_deleted = max(0, deleted_count - 1)
     try:
-        status = await client.send_message(chat_id, f"🗑 **Purged {deleted_count} messages!**")
+        status = await client.send_message(chat_id, f"🗑 **Purged {actual_deleted} messages!**")
         await asyncio.sleep(3)
         await status.delete()
     except Exception:
         pass
 
 
-# ================= 4. PURGEME =================
+# ================= 4. PURGEME (FIXED INDEXING) =================
 @app.on_message(filters.me & filters.command(["purgeme", "pme"], prefixes=PREFIX), group=0)
 async def purge_me_messages(client, message):
     count = 1
     if len(message.command) > 1:
         try:
-            count = int(message.command)
+            count = int(message.command)  # index fix
         except (ValueError, IndexError):
             await safe_edit(message, "❌ **Usage:** `.purgeme 10`")
             return
@@ -285,7 +299,7 @@ async def purge_me_messages(client, message):
     msg_ids = []
 
     try:
-        async for msg in client.get_chat_history(chat_id, limit=max(count * 10, 100)):
+        async for msg in client.get_chat_history(chat_id, limit=max(count * 5, 50)):
             if msg.id == cmd_id:
                 continue
             if msg.outgoing or (msg.from_user and msg.from_user.is_self):
@@ -307,8 +321,9 @@ async def purge_me_messages(client, message):
             pass
         await asyncio.sleep(0.2)
 
+    actual_deleted = max(0, deleted - 1)
     try:
-        status = await client.send_message(chat_id, f"🗑 **Deleted {max(0, deleted - 1)} of your messages!**")
+        status = await client.send_message(chat_id, f"🗑 **Deleted {actual_deleted} of your messages!**")
         await asyncio.sleep(3)
         await status.delete()
     except Exception:
@@ -403,12 +418,10 @@ async def handle_deleted_messages(client, messages):
             continue
 
         cached = None
-        # Agar chat object available hai (channels / supergroups)
         if msg.chat:
             key = f"{msg.chat.id}_{msg.id}"
             cached = MSG_CACHE.pop(key, None)
         else:
-            # Private chats me Telegram chat object nahi bhejta, isliye msg.id se match karna
             target_suffix = f"_{msg.id}"
             found_key = None
             for k in list(MSG_CACHE.keys()):
