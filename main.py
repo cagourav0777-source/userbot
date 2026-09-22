@@ -1,7 +1,6 @@
 import asyncio
 import os
 import time
-from collections import OrderedDict
 from datetime import datetime, timezone, timedelta
 
 # Python 3.12 / 3.14 loop setup
@@ -17,9 +16,6 @@ IST = timezone(timedelta(hours=5, minutes=30))
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 SESSION_STRING = os.getenv("SESSION_STRING")
-
-# Custom Log Channel ID
-LOG_CHANNEL = int(os.getenv("LOG_CHANNEL", "-1004361444185"))
 
 if not API_ID or not API_HASH:
     raise ValueError("❌ ERROR: 'API_ID' / 'API_HASH' environment variables missing hain!")
@@ -51,11 +47,6 @@ ORIGINAL_PROFILE = {
 }
 
 PREFIX = ["."]
-
-# Anti-Delete & Anti-Edit: Sirf un chats ke liye jinhe .add kiya jaye
-WATCHED_CHATS = set()
-MSG_CACHE = OrderedDict()
-MAX_CACHE_SIZE = 1000
 
 
 # ================= HELPER FUNCTIONS =================
@@ -94,36 +85,6 @@ async def delete_after_delay(message, delay: int = 120):
         await message.delete()
     except Exception:
         pass
-
-
-async def send_log(client, text):
-    """Logs ko private channel me bhejna, fail hone par Saved Messages me fallback."""
-    try:
-        await client.send_message(LOG_CHANNEL, text)
-    except Exception:
-        try:
-            await client.send_message("me", text)
-        except Exception:
-            pass
-
-
-def cache_message(msg):
-    """Sirf WATCHED_CHATS ke messages ko cache karna."""
-    if not msg or not msg.chat:
-        return
-    if msg.chat.id not in WATCHED_CHATS:
-        return
-
-    key = f"{msg.chat.id}_{msg.id}"
-    MSG_CACHE[key] = {
-        "text": msg.text or msg.caption or "[Media / Non-text message]",
-        "sender": msg.from_user.first_name if msg.from_user else "Unknown",
-        "sender_id": msg.from_user.id if msg.from_user else 0,
-        "chat_title": msg.chat.title or "Private Chat",
-        "chat_id": msg.chat.id
-    }
-    if len(MSG_CACHE) > MAX_CACHE_SIZE:
-        MSG_CACHE.popitem(last=False)
 
 
 # =========================================================
@@ -355,42 +316,6 @@ async def ping_cmd(client, message):
     await safe_edit(m, f"🏓 **Pong!** `{ms:.0f} ms`")
 
 
-# ================= 6. WATCHLIST CONTROLS (.add / .rem / .chats) =================
-@app.on_message(filters.me & filters.command(["add", "watch"], prefixes=PREFIX), group=0)
-async def add_chat_to_watch(client, message):
-    chat_id = message.chat.id
-    title = message.chat.title or message.chat.first_name or "This Chat"
-    WATCHED_CHATS.add(chat_id)
-    await safe_edit(
-        message,
-        f"👁️ **Added to Watchlist!**\n\n"
-        f"📌 **Chat:** `{title}` (`{chat_id}`)\n"
-        f"✅ Ab sirf is chat ke deleted/edited messages channel me log honge."
-    )
-
-
-@app.on_message(filters.me & filters.command(["rem", "unwatch"], prefixes=PREFIX), group=0)
-async def remove_chat_from_watch(client, message):
-    chat_id = message.chat.id
-    if chat_id in WATCHED_CHATS:
-        WATCHED_CHATS.remove(chat_id)
-        await safe_edit(message, "❌ **Removed from Watchlist!** Ab is chat ke logs nahi aayenge.")
-    else:
-        await safe_edit(message, "ℹ️ Ye chat watchlist me add nahi thi.")
-
-
-@app.on_message(filters.me & filters.command(["chats", "watchlist"], prefixes=PREFIX), group=0)
-async def list_watched_chats(client, message):
-    if not WATCHED_CHATS:
-        await safe_edit(message, "ℹ️ Abhi koi bhi chat watchlist me add nahi hai.\nJis chat ko track karna hai wahan jakar `.add` likhein.")
-        return
-
-    text = f"📋 **Watched Chats ({len(WATCHED_CHATS)}):**\n\n"
-    for cid in WATCHED_CHATS:
-        text += f"• `{cid}`\n"
-    await safe_edit(message, text)
-
-
 # =========================================================
 #  GROUP 1  ->  DM me khud message bhejo to Auto-Unafk
 # =========================================================
@@ -450,74 +375,6 @@ async def afk_reply_handler(client, message):
         asyncio.create_task(delete_after_delay(sent_reply, delay=120))
     except Exception:
         pass
-
-
-# =========================================================
-#  GROUP 10, 11, 12  ->  TARGETED ANTI-DELETE & ANTI-EDIT LOGGER
-# =========================================================
-
-# Sirf unhi chats ko cache karna jo .add ki gayi hain
-@app.on_message(filters.all, group=10)
-async def message_logger_cache(client, message):
-    cache_message(message)
-
-
-# Deleted message detect karke Channel me bhejna
-@app.on_deleted_messages(group=11)
-async def handle_deleted_messages(client, messages):
-    for msg in messages:
-        if not msg:
-            continue
-
-        cached = None
-        if msg.chat:
-            if msg.chat.id not in WATCHED_CHATS:
-                continue
-            key = f"{msg.chat.id}_{msg.id}"
-            cached = MSG_CACHE.pop(key, None)
-        else:
-            target_suffix = f"_{msg.id}"
-            found_key = None
-            for k in list(MSG_CACHE.keys()):
-                if k.endswith(target_suffix):
-                    found_key = k
-                    break
-            if found_key:
-                cached = MSG_CACHE.pop(found_key, None)
-
-        if cached and cached.get("chat_id") in WATCHED_CHATS:
-            alert = (
-                "🗑️ **ᴅᴇʟᴇᴛᴇᴅ ᴍᴇssᴀɢᴇ ᴅᴇᴛᴇᴄᴛᴇᴅ!**\n\n"
-                f"👤 **From:** {cached['sender']} (`{cached['sender_id']}`)\n"
-                f"💬 **Chat:** {cached['chat_title']} (`{cached['chat_id']}`)\n"
-                f"📝 **Message:**\n`{cached['text']}`"
-            )
-            await send_log(client, alert)
-
-
-# Edited message detect karke Channel me bhejna
-@app.on_edited_message(group=12)
-async def handle_edited_messages(client, message):
-    if not message or not message.chat:
-        return
-    if message.chat.id not in WATCHED_CHATS:
-        return
-
-    key = f"{message.chat.id}_{message.id}"
-    old_msg = MSG_CACHE.get(key)
-    new_text = message.text or message.caption or "[Media]"
-
-    if old_msg and old_msg["text"] != new_text:
-        alert = (
-            "✏️ **ᴇᴅɪᴛᴇᴅ ᴍᴇssᴀɢᴇ ᴅᴇᴛᴇᴄᴛᴇᴅ!**\n\n"
-            f"👤 **From:** {old_msg['sender']} (`{old_msg['sender_id']}`)\n"
-            f"💬 **Chat:** {old_msg['chat_title']} (`{old_msg['chat_id']}`)\n\n"
-            f"🔴 **Original:**\n`{old_msg['text']}`\n\n"
-            f"🟢 **Edited To:**\n`{new_text}`"
-        )
-        await send_log(client, alert)
-
-    cache_message(message)
 
 
 # ================= DUMMY WEB SERVER (RENDER 24/7) =================
