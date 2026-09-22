@@ -272,7 +272,7 @@ async def purge_me_messages(client, message):
     if len(message.command) > 1:
         try:
             count = int(message.command)
-        except ValueError:
+        except (ValueError, IndexError):
             await safe_edit(message, "❌ **Usage:** `.purgeme 10`")
             return
 
@@ -379,7 +379,6 @@ async def afk_reply_handler(client, message):
         f"📝 **ʀᴇᴀsᴏɴ :** `{AFK_REASON}`"
     )
     try:
-        # Message bhej kar 120 seconds (2 mins) baad background me auto-delete karna
         sent_reply = await message.reply_text(reply_text)
         asyncio.create_task(delete_after_delay(sent_reply, delay=120))
     except Exception:
@@ -390,7 +389,7 @@ async def afk_reply_handler(client, message):
 #  GROUP 10, 11, 12  ->  ANTI-DELETE & ANTI-EDIT LOGGER
 # =========================================================
 
-# Har message ko cache me store karna
+# Har incoming/outgoing message ko cache me store karna
 @app.on_message(filters.all, group=10)
 async def message_logger_cache(client, message):
     cache_message(message)
@@ -400,8 +399,25 @@ async def message_logger_cache(client, message):
 @app.on_deleted_messages(group=11)
 async def handle_deleted_messages(client, messages):
     for msg in messages:
-        key = f"{msg.chat.id}_{msg.id}"
-        cached = MSG_CACHE.pop(key, None)
+        if not msg:
+            continue
+
+        cached = None
+        # Agar chat object available hai (channels / supergroups)
+        if msg.chat:
+            key = f"{msg.chat.id}_{msg.id}"
+            cached = MSG_CACHE.pop(key, None)
+        else:
+            # Private chats me Telegram chat object nahi bhejta, isliye msg.id se match karna
+            target_suffix = f"_{msg.id}"
+            found_key = None
+            for k in list(MSG_CACHE.keys()):
+                if k.endswith(target_suffix):
+                    found_key = k
+                    break
+            if found_key:
+                cached = MSG_CACHE.pop(found_key, None)
+
         if cached:
             alert = (
                 "🗑️ **ᴅᴇʟᴇᴛᴇᴅ ᴍᴇssᴀɢᴇ ᴅᴇᴛᴇᴄᴛᴇᴅ!**\n\n"
@@ -418,7 +434,7 @@ async def handle_deleted_messages(client, messages):
 # Edited message detect karke original vs new text Saved Messages me bhejna
 @app.on_edited_message(group=12)
 async def handle_edited_messages(client, message):
-    if not message.chat:
+    if not message or not message.chat:
         return
     key = f"{message.chat.id}_{message.id}"
     old_msg = MSG_CACHE.get(key)
