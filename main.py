@@ -1,6 +1,7 @@
 import asyncio
 import os
 import time
+from collections import OrderedDict
 from datetime import datetime, timezone, timedelta
 
 # Python 3.12 / 3.14 loop setup
@@ -48,8 +49,12 @@ ORIGINAL_PROFILE = {
 
 PREFIX = ["."]
 
+# Anti-Delete & Anti-Edit Memory Cache (Limit: 1000 messages)
+MSG_CACHE = OrderedDict()
+MAX_CACHE_SIZE = 1000
 
-# ================= HELPER: READABLE TIME =================
+
+# ================= HELPER FUNCTIONS =================
 def get_readable_time(seconds: int) -> str:
     if seconds < 60:
         return f"{seconds}s"
@@ -78,8 +83,33 @@ async def safe_edit(message, text):
         return message
 
 
+async def delete_after_delay(message, delay: int = 120):
+    """Message ko background me specified seconds (120s = 2 min) baad delete karega."""
+    try:
+        await asyncio.sleep(delay)
+        await message.delete()
+    except Exception:
+        pass
+
+
+def cache_message(msg):
+    """Incoming / Outgoing messages ko RAM me store karna."""
+    if not msg or not msg.chat:
+        return
+    key = f"{msg.chat.id}_{msg.id}"
+    MSG_CACHE[key] = {
+        "text": msg.text or msg.caption or "[Media / Non-text message]",
+        "sender": msg.from_user.first_name if msg.from_user else "Unknown",
+        "sender_id": msg.from_user.id if msg.from_user else 0,
+        "chat_title": msg.chat.title or "Private Chat",
+        "chat_id": msg.chat.id
+    }
+    if len(MSG_CACHE) > MAX_CACHE_SIZE:
+        MSG_CACHE.popitem(last=False)
+
+
 # =========================================================
-#  GROUP 0  ->  SAARE COMMANDS (sabse pehle inhe check karo)
+#  GROUP 0  ->  COMMANDS
 # =========================================================
 
 # ================= 1. AFK ON / OFF =================
@@ -92,7 +122,7 @@ async def set_afk(client, message):
     current_ist = datetime.now(IST).strftime("%I:%M %p")
 
     if len(message.command) > 1:
-        AFK_REASON = message.text.split(maxsplit=1)[1]
+        AFK_REASON = message.text.split(maxsplit=1)
     else:
         AFK_REASON = "Away from keyboard"
 
@@ -124,7 +154,6 @@ async def copy_profile(client, message):
     status_msg = await safe_edit(message, "🔄 **Cloning profile...**")
 
     try:
-        # Pehli baar clone kar rahe ho to apna original profile backup karo
         if not IS_CLONED:
             me = await client.get_chat("me")
             ORIGINAL_PROFILE["first_name"] = me.first_name or ""
@@ -185,7 +214,6 @@ async def revert_profile(client, message):
             bio=ORIGINAL_PROFILE["bio"]
         )
 
-        # Cloned DP hatao
         try:
             current = [p async for p in client.get_chat_photos("me", limit=1)]
             if current:
@@ -193,11 +221,11 @@ async def revert_profile(client, message):
         except Exception:
             pass
 
-        # Purani DP wapas lagao
         old_dp = ORIGINAL_PROFILE.get("photo")
         if old_dp and os.path.exists(old_dp):
             try:
                 await client.set_profile_photo(photo=old_dp)
+                os.remove(old_dp)
             except Exception:
                 pass
 
@@ -207,7 +235,7 @@ async def revert_profile(client, message):
         await safe_edit(status_msg, f"❌ **Error:** `{type(e).__name__}: {e}`")
 
 
-# ================= 3. PURGE (REPLY SE ABHI TAK SAB DELETE) =================
+# ================= 3. PURGE =================
 @app.on_message(filters.me & filters.command("purge", prefixes=PREFIX), group=0)
 async def purge_messages(client, message):
     if not message.reply_to_message:
@@ -237,13 +265,13 @@ async def purge_messages(client, message):
         pass
 
 
-# ================= 4. PURGEME (APNE RECENT MESSAGES DELETE) =================
+# ================= 4. PURGEME =================
 @app.on_message(filters.me & filters.command(["purgeme", "pme"], prefixes=PREFIX), group=0)
 async def purge_me_messages(client, message):
     count = 1
     if len(message.command) > 1:
         try:
-            count = int(message.command[1])
+            count = int(message.command)
         except ValueError:
             await safe_edit(message, "❌ **Usage:** `.purgeme 10`")
             return
@@ -268,7 +296,7 @@ async def purge_me_messages(client, message):
         await safe_edit(message, f"❌ **Error:** `{type(e).__name__}: {e}`")
         return
 
-    msg_ids.append(cmd_id)  # command wala message bhi delete
+    msg_ids.append(cmd_id)
     deleted = 0
 
     for i in range(0, len(msg_ids), 100):
@@ -287,7 +315,7 @@ async def purge_me_messages(client, message):
         pass
 
 
-# ================= 5. PING (test ke liye) =================
+# ================= 5. PING =================
 @app.on_message(filters.me & filters.command("ping", prefixes=PREFIX), group=0)
 async def ping_cmd(client, message):
     start = time.time()
@@ -297,8 +325,7 @@ async def ping_cmd(client, message):
 
 
 # =========================================================
-#  GROUP 1  ->  DM me khud message bhejo to AFK off
-#  (alag group me hai isliye upar ke commands block nahi hote)
+#  GROUP 1  ->  DM me khud message bhejo to Auto-Unafk
 # =========================================================
 @app.on_message(filters.me & filters.private, group=1)
 async def auto_unafk_on_message(client, message):
@@ -322,7 +349,7 @@ async def auto_unafk_on_message(client, message):
 
 
 # =========================================================
-#  GROUP 2  ->  AFK auto-reply SIRF DMs me (groups me nahi)
+#  GROUP 2  ->  AFK Auto-Reply (DMs) + 2 Min Auto-Delete
 # =========================================================
 @app.on_message(
     filters.private & filters.incoming & ~filters.me & ~filters.bot & ~filters.service,
@@ -352,9 +379,65 @@ async def afk_reply_handler(client, message):
         f"📝 **ʀᴇᴀsᴏɴ :** `{AFK_REASON}`"
     )
     try:
-        await message.reply_text(reply_text)
+        # Message bhej kar 120 seconds (2 mins) baad background me auto-delete karna
+        sent_reply = await message.reply_text(reply_text)
+        asyncio.create_task(delete_after_delay(sent_reply, delay=120))
     except Exception:
         pass
+
+
+# =========================================================
+#  GROUP 10, 11, 12  ->  ANTI-DELETE & ANTI-EDIT LOGGER
+# =========================================================
+
+# Har message ko cache me store karna
+@app.on_message(filters.all, group=10)
+async def message_logger_cache(client, message):
+    cache_message(message)
+
+
+# Deleted message detect karke Saved Messages me bhejna
+@app.on_deleted_messages(group=11)
+async def handle_deleted_messages(client, messages):
+    for msg in messages:
+        key = f"{msg.chat.id}_{msg.id}"
+        cached = MSG_CACHE.pop(key, None)
+        if cached:
+            alert = (
+                "🗑️ **ᴅᴇʟᴇᴛᴇᴅ ᴍᴇssᴀɢᴇ ᴅᴇᴛᴇᴄᴛᴇᴅ!**\n\n"
+                f"👤 **From:** {cached['sender']} (`{cached['sender_id']}`)\n"
+                f"💬 **Chat:** {cached['chat_title']} (`{cached['chat_id']}`)\n"
+                f"📝 **Message:**\n`{cached['text']}`"
+            )
+            try:
+                await client.send_message("me", alert)
+            except Exception:
+                pass
+
+
+# Edited message detect karke original vs new text Saved Messages me bhejna
+@app.on_edited_message(group=12)
+async def handle_edited_messages(client, message):
+    if not message.chat:
+        return
+    key = f"{message.chat.id}_{message.id}"
+    old_msg = MSG_CACHE.get(key)
+    new_text = message.text or message.caption or "[Media]"
+
+    if old_msg and old_msg["text"] != new_text:
+        alert = (
+            "✏️ **ᴇᴅɪᴛᴇᴅ ᴍᴇssᴀɢᴇ ᴅᴇᴛᴇᴄᴛᴇᴅ!**\n\n"
+            f"👤 **From:** {old_msg['sender']} (`{old_msg['sender_id']}`)\n"
+            f"💬 **Chat:** {old_msg['chat_title']} (`{old_msg['chat_id']}`)\n\n"
+            f"🔴 **Original:**\n`{old_msg['text']}`\n\n"
+            f"🟢 **Edited To:**\n`{new_text}`"
+        )
+        try:
+            await client.send_message("me", alert)
+        except Exception:
+            pass
+
+    cache_message(message)
 
 
 # ================= DUMMY WEB SERVER (RENDER 24/7) =================
